@@ -359,11 +359,6 @@ PAGE = r"""<!DOCTYPE html>
   .att:hover .attx { opacity: 1; }
   .att .attx:hover { color: var(--danger); }
   .task.drop { border-color: var(--accent); background: var(--accent-soft); }
-  .task.waitcard { border-left: 3px solid var(--accent); }
-  .task .who {
-    font-size: 11.5px; font-weight: 600; color: var(--accent);
-    text-transform: uppercase; letter-spacing: .04em; margin-bottom: 1px;
-  }
   .task .controls {
     display: flex; gap: 4px; align-items: center; flex-shrink: 0;
     opacity: 0; transition: opacity .12s;
@@ -523,9 +518,8 @@ function renderAddBar() {
 }
 
 function taskRow(t, opts = {}) {
-  const wait = t.waiting_on && !t.completed_at && !opts.waitingView
+  const wait = opts.waitingView && t.waiting_on && !t.completed_at
     ? `<span class="wait">waiting on ${esc(t.waiting_on)}</span>` : "";
-  const who = opts.waitingView ? `<div class="who">Waiting on ${esc(t.waiting_on)}</div>` : "";
   const tagBits = [
     opts.hideProj ? "" : `<span class="proj">${esc(t.project)}</span>`,
     dueTag(t), wait,
@@ -557,11 +551,10 @@ function taskRow(t, opts = {}) {
       <button class="savebtn" onclick="saveDetails(${t.id})">Save</button>
     </div>` : "";
   return `
-  <div class="task ${t.completed_at ? "done" : ""} ${opts.waitingView ? "waitcard" : ""}" data-tid="${t.id}">
+  <div class="task ${t.completed_at ? "done" : ""}" data-tid="${t.id}">
     <div class="row">
       <input type="checkbox" ${t.completed_at ? "checked" : ""} onchange="toggleDone(${t.id})">
       <div class="text">
-        ${who}
         <div class="label">${esc(t.text)}</div>
         ${tagBits ? `<div class="tags">${tagBits}</div>` : ""}
         ${atts ? `<div class="atts">${atts}</div>` : ""}
