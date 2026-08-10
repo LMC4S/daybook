@@ -10,15 +10,18 @@ Data lives in tasks.json next to this file. Back it up by copying that file.
 import json
 import os
 import shutil
+import subprocess
 import sys
 import threading
 import webbrowser
 from datetime import datetime, timedelta
+from urllib.parse import parse_qs, unquote, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8765
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(HERE, "tasks.json")
+ATTACH_DIR = os.path.join(HERE, "attachments")
 LOCK = threading.Lock()
 
 
@@ -73,7 +76,7 @@ def seed_data():
 TASK_DEFAULTS = {
     "text": "", "project": "(no project)", "bucket": "week",
     "note": "", "waiting_on": "", "due": "",
-    "created": "", "completed_at": None,
+    "created": "", "completed_at": None, "attachments": [],
 }
 
 
@@ -87,7 +90,8 @@ def upgrade(data):
     data.setdefault("tasks", [])
     for task in data["tasks"]:
         for field, default in TASK_DEFAULTS.items():
-            task.setdefault(field, default)
+            if field not in task:
+                task[field] = list(default) if isinstance(default, list) else default
     data.setdefault("next_id", max([t["id"] for t in data["tasks"]], default=0) + 1)
     return data
 
@@ -142,7 +146,51 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, {"error": "not found"})
 
+    def _attach(self):
+        """Store a raw uploaded file under attachments/<task id>/."""
+        try:
+            tid = int(parse_qs(urlparse(self.path).query).get("id", [""])[0])
+        except ValueError:
+            self._send(400, {"error": "bad id"})
+            return
+        name = os.path.basename(unquote(self.headers.get("X-Filename", ""))).strip()
+        name = name.replace("/", "_").replace("\\", "_")[:150] or "attachment"
+        length = int(self.headers.get("Content-Length", 0))
+        if length <= 0:
+            self._send(400, {"error": "empty file"})
+            return
+        blob = self.rfile.read(length)
+        data = load_data()
+        task = next((t for t in data["tasks"] if t["id"] == tid), None)
+        if task is None:
+            self._send(404, {"error": "no such task"})
+            return
+        folder = os.path.join(ATTACH_DIR, str(tid))
+        os.makedirs(folder, exist_ok=True)
+        base, ext = os.path.splitext(name)
+        candidate, n = name, 2
+        while os.path.exists(os.path.join(folder, candidate)):
+            candidate = "%s-%d%s" % (base, n, ext)
+            n += 1
+        with open(os.path.join(folder, candidate), "wb") as f:
+            f.write(blob)
+        task["attachments"].append(candidate)
+        save_data(data)
+        self._send(200, {"ok": True, "name": candidate})
+
+    def _attachment_path(self, task, name):
+        """Resolve an attachment to a real path inside ATTACH_DIR, or None."""
+        if name not in task["attachments"]:
+            return None
+        path = os.path.realpath(os.path.join(ATTACH_DIR, str(task["id"]), name))
+        if not path.startswith(os.path.realpath(ATTACH_DIR) + os.sep):
+            return None
+        return path
+
     def do_POST(self):
+        if self.path.startswith("/api/attach"):
+            self._attach()
+            return
         try:
             body = self._body()
         except (ValueError, json.JSONDecodeError):
@@ -190,6 +238,34 @@ class Handler(BaseHTTPRequestHandler):
             if len(data["tasks"]) == before:
                 self._send(404, {"error": "no such task"})
                 return
+            save_data(data)
+            self._send(200, {"ok": True})
+
+        elif self.path == "/api/open":
+            task = next((t for t in data["tasks"] if t["id"] == body.get("id")), None)
+            path = self._attachment_path(task, body.get("name") or "") if task else None
+            if path is None or not os.path.exists(path):
+                self._send(404, {"error": "no such attachment"})
+                return
+            if hasattr(os, "startfile"):
+                os.startfile(path)  # Windows: .msg opens in Outlook
+            else:
+                opener = "open" if sys.platform == "darwin" else "xdg-open"
+                subprocess.Popen([opener, path])
+            self._send(200, {"ok": True})
+
+        elif self.path == "/api/detach":
+            task = next((t for t in data["tasks"] if t["id"] == body.get("id")), None)
+            name = body.get("name") or ""
+            path = self._attachment_path(task, name) if task else None
+            if path is None:
+                self._send(404, {"error": "no such attachment"})
+                return
+            task["attachments"].remove(name)
+            try:
+                os.remove(path)
+            except OSError:
+                pass
             save_data(data)
             self._send(200, {"ok": True})
 
@@ -292,6 +368,20 @@ PAGE = r"""<!DOCTYPE html>
   .due.overdue { color: var(--danger); font-weight: 700; }
   .task.done .due { color: var(--done); font-weight: 400; }
   .task .meta { font-size: 12.5px; color: var(--muted); font-style: italic; margin-top: 2px; white-space: pre-wrap; }
+  .atts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+  .att {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 12px;
+    color: var(--accent); border: 1px solid var(--line); border-radius: 6px;
+    padding: 2px 8px; cursor: pointer; max-width: 100%;
+  }
+  .att:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .att .attx {
+    border: none; background: none; color: var(--muted); cursor: pointer;
+    font-size: 12px; padding: 0 0 0 2px; opacity: 0; transition: opacity .12s;
+  }
+  .att:hover .attx { opacity: 1; }
+  .att .attx:hover { color: var(--danger); }
+  .task.drop { border-color: var(--accent); background: var(--accent-soft); }
   .task .controls {
     display: flex; gap: 4px; align-items: center; flex-shrink: 0;
     opacity: 0; transition: opacity .12s;
@@ -320,6 +410,7 @@ PAGE = r"""<!DOCTYPE html>
   }
   .editor textarea { resize: vertical; min-height: 54px; }
   .editor label { font-size: 12px; color: var(--muted); }
+  .editor .hint { font-size: 12px; color: var(--muted); }
   .editor .savebtn { justify-self: start; border: none; background: var(--accent); color: #fff;
     border-radius: 8px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
 
@@ -439,6 +530,12 @@ function taskRow(t, opts = {}) {
     opts.hideProj ? "" : `<span class="proj">${esc(t.project)}</span>`,
     dueTag(t), wait,
   ].filter(Boolean).join("");
+  const atts = (t.attachments || []).map(name => {
+    const isEmail = /\.(msg|eml)$/i.test(name);
+    return `<span class="att" data-name="${esc(name)}" title="Open in ${isEmail ? "Outlook" : "default app"}">` +
+      `${isEmail ? "✉" : "📎"} ${esc(name.replace(/\.(msg|eml)$/i, ""))}` +
+      `<button class="attx" data-name="${esc(name)}" title="Remove attachment">×</button></span>`;
+  }).join("");
   const mover = `<select class="mv" title="Move to…" onchange="moveTask(${t.id}, this.value)">`
     + BUCKETS.map(([b, label]) => `<option value="${b}" ${t.bucket===b?"selected":""}>${label}</option>`).join("")
     + `</select>`;
@@ -448,15 +545,17 @@ function taskRow(t, opts = {}) {
       <div><label>Deadline — only for real commitments (leave blank otherwise)</label>
         <input type="date" id="due-${t.id}" value="${esc(t.due || "")}"></div>
       <div><label>Waiting on (person / ticket)</label><input id="wait-${t.id}" value="${esc(t.waiting_on)}"></div>
+      <div class="hint">To attach an email: drag it from Outlook to your desktop (this creates a .msg file), then drop that file anywhere on this task.</div>
       <button class="savebtn" onclick="saveDetails(${t.id})">Save</button>
     </div>` : "";
   return `
-  <div class="task ${t.completed_at ? "done" : ""}">
+  <div class="task ${t.completed_at ? "done" : ""}" data-tid="${t.id}">
     <div class="row">
       <input type="checkbox" ${t.completed_at ? "checked" : ""} onchange="toggleDone(${t.id})">
       <div class="text">
         <div class="label">${esc(t.text)}</div>
         ${tagBits ? `<div class="tags">${tagBits}</div>` : ""}
+        ${atts ? `<div class="atts">${atts}</div>` : ""}
         ${t.note && !expanded.has(t.id) ? `<div class="meta">${esc(t.note)}</div>` : ""}
       </div>
       <div class="controls">
@@ -613,6 +712,41 @@ function toggleAdd() {
   btn.classList.toggle("hidden", nowOpen);
   if (nowOpen) document.getElementById("add-text").focus();
 }
+
+// ---------- attachments: click to open, × to detach, drag-and-drop to add ----------
+const viewEl = document.getElementById("view");
+viewEl.addEventListener("click", async e => {
+  const card = e.target.closest(".task");
+  if (!card) return;
+  const id = Number(card.dataset.tid);
+  const x = e.target.closest(".attx");
+  if (x) { await api("/api/detach", { id, name: x.dataset.name }); await refresh(); return; }
+  const chip = e.target.closest(".att");
+  if (chip) await api("/api/open", { id, name: chip.dataset.name });
+});
+viewEl.addEventListener("dragover", e => {
+  const card = e.target.closest(".task");
+  if (card) { e.preventDefault(); card.classList.add("drop"); }
+});
+viewEl.addEventListener("dragleave", e => {
+  const card = e.target.closest(".task");
+  if (card && !card.contains(e.relatedTarget)) card.classList.remove("drop");
+});
+viewEl.addEventListener("drop", async e => {
+  const card = e.target.closest(".task");
+  if (!card) return;
+  e.preventDefault();
+  card.classList.remove("drop");
+  const id = Number(card.dataset.tid);
+  for (const f of e.dataTransfer.files) {
+    await fetch("/api/attach?id=" + id, {
+      method: "POST",
+      headers: { "X-Filename": encodeURIComponent(f.name) },
+      body: f,
+    });
+  }
+  await refresh();
+});
 
 // ---------- init ----------
 document.getElementById("add-form").addEventListener("keydown", e => {

@@ -2,3 +2,4 @@ tasks.json
 tasks.backup.json
 .claude/
 __pycache__/
+attachments/
