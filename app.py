@@ -50,8 +50,8 @@ def upgrade(data):
             if field not in task:
                 task[field] = (list(default) if isinstance(default, list)
                                else dict(default) if isinstance(default, dict) else default)
-        # "waiting" used to be a bucket; it is now a flag (waiting_on) on top of
-        # the time buckets. Files from that era migrate to This Week, flag kept.
+        # "waiting" was once a bucket; those tasks migrate to This Week. The
+        # waiting_on field is kept in the data for compatibility but has no UI.
         if task.get("bucket") == "waiting":
             task["bucket"] = "week"
     data.setdefault("next_id", max([t["id"] for t in data["tasks"]], default=0) + 1)
@@ -316,7 +316,6 @@ PAGE = r"""<!DOCTYPE html>
     border: 1px solid var(--line); background: var(--bg); color: var(--text);
     border-radius: 8px; padding: 6px 10px; font-size: 13px; cursor: pointer;
   }
-  .addcontrols input[type=text] { cursor: text; flex: 1 1 150px; }
   .addcontrols button.add { background: var(--accent); color: #fff; border-color: var(--accent); }
   .addcontrols button.closeadd { border: none; background: transparent; color: var(--muted); }
 
@@ -339,12 +338,11 @@ PAGE = r"""<!DOCTYPE html>
     font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
     color: var(--muted); white-space: nowrap;
   }
-  .wait { font-size: 12px; color: var(--muted); white-space: nowrap; }
   .due { font-size: 12px; font-weight: 500; color: var(--accent); white-space: nowrap; }
   .due.today { font-weight: 700; }
   .due.overdue { color: var(--danger); font-weight: 700; }
   .task.done .due { color: var(--done); font-weight: 400; }
-  .task .meta { font-size: 12.5px; color: var(--muted); font-style: italic; margin-top: 2px; white-space: pre-wrap; }
+  .task .meta { font-size: 12.5px; color: var(--muted); margin-top: 2px; white-space: pre-wrap; }
   .atts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
   .att {
     display: inline-flex; align-items: center; gap: 5px; font-size: 12px;
@@ -438,7 +436,6 @@ PAGE = r"""<!DOCTYPE html>
         <option value="later">Later</option>
       </select>
       <input type="date" id="add-due" title="Deadline (optional)">
-      <input type="text" id="add-wait" class="hidden" placeholder="Waiting on whom?">
       <button class="add" type="submit">Add</button>
       <button type="button" class="closeadd" onclick="toggleAdd()" title="Close (Esc)">Close</button>
     </div>
@@ -484,7 +481,6 @@ function render() {
   const v = document.getElementById("view");
   if (tab === "today")        v.innerHTML = viewToday();
   else if (tab === "week")    v.innerHTML = viewGrouped("week", "Nothing queued for this week.");
-  else if (tab === "waiting") v.innerHTML = viewWaiting();
   else if (tab === "later")   v.innerHTML = viewGrouped("later", "Nothing parked for later.");
   else if (tab === "projects") v.innerHTML = viewProjects();
   else if (tab === "done")    v.innerHTML = viewDone();
@@ -492,9 +488,8 @@ function render() {
 
 function renderTabs() {
   const counts = { today: inBucket("today").length, week: inBucket("week").length,
-                   waiting: state.tasks.filter(t => pending(t) && t.waiting_on).length,
                    later: inBucket("later").length };
-  const defs = [["today","Today"],["week","This Week"],["waiting","Waiting For"],["later","Later"],["projects","Projects"],["done","Done"]];
+  const defs = [["today","Today"],["week","This Week"],["later","Later"],["projects","Projects"],["done","Done"]];
   document.getElementById("tabs").innerHTML = defs.map(([k, label]) => {
     const c = counts[k] !== undefined ? `<span class="count">${counts[k]}</span>` : "";
     return `<button class="${tab===k?"active":""}" onclick="setTab('${k}')">${label}${c}</button>`;
@@ -502,12 +497,10 @@ function renderTabs() {
 }
 function setTab(k) { tab = k; render(); syncAddBucket(); }
 
-// The add form's bucket follows the tab you're on (Waiting/Projects/Done default
-// to This Week); the "waiting on whom" field appears only on the Waiting tab.
+// The add form's bucket follows the tab you're on (Projects/Done default to This Week).
 function syncAddBucket() {
   const map = { today: "today", week: "week", later: "later" };
   document.getElementById("add-bucket").value = map[tab] || "week";
-  document.getElementById("add-wait").classList.toggle("hidden", tab !== "waiting");
 }
 
 function renderAddBar() {
@@ -518,11 +511,9 @@ function renderAddBar() {
 }
 
 function taskRow(t, opts = {}) {
-  const wait = opts.waitingView && t.waiting_on && !t.completed_at
-    ? `<span class="wait">waiting on ${esc(t.waiting_on)}</span>` : "";
   const tagBits = [
     opts.hideProj ? "" : `<span class="proj">${esc(t.project)}</span>`,
-    dueTag(t), wait,
+    dueTag(t),
   ].filter(Boolean).join("");
   const attLabel = name => (t.attachment_labels || {})[name] || name.replace(/\.(msg|eml)$/i, "");
   const atts = (t.attachments || []).map(name => {
@@ -539,8 +530,6 @@ function taskRow(t, opts = {}) {
       <div><label>Note</label><textarea id="note-${t.id}">${esc(t.note)}</textarea></div>
       <div><label>Deadline (optional)</label>
         <input type="date" id="due-${t.id}" value="${esc(t.due || "")}"></div>
-      <div><label>Waiting on (optional)</label>
-        <input id="wait-${t.id}" value="${esc(t.waiting_on)}"></div>
       ${(t.attachments || []).length ? `
       <div><label>Attachment names</label>
         <div class="attlist">
@@ -608,13 +597,6 @@ function viewGrouped(bucket, emptyMsg) {
   ).join("");
 }
 
-function viewWaiting() {
-  const tasks = state.tasks.filter(t => pending(t) && t.waiting_on)
-    .sort((a, b) => a.waiting_on.localeCompare(b.waiting_on));
-  if (!tasks.length) return `<div class="empty">Nothing waiting on anyone.</div>`;
-  return tasks.map(t => taskRow(t, {waitingView: true})).join("");
-}
-
 function viewProjects() {
   if (!state.projects.length)
     return `<div class="empty">No projects yet.</div>`;
@@ -670,12 +652,9 @@ async function addTask() {
   }
   const bucket = document.getElementById("add-bucket").value;
   const due = document.getElementById("add-due").value;
-  const waitEl = document.getElementById("add-wait");
-  const waiting_on = waitEl.classList.contains("hidden") ? "" : waitEl.value.trim();
-  await api("/api/add", { text, project, bucket, due, waiting_on });
+  await api("/api/add", { text, project, bucket, due });
   input.value = "";
   document.getElementById("add-due").value = "";
-  document.getElementById("add-wait").value = "";
   await refresh();
   toggleAdd();  // collapse after adding
 }
@@ -724,7 +703,6 @@ function toggleEdit(id) {
 
 async function saveDetails(id) {
   const note = document.getElementById("note-" + id).value;
-  const waiting_on = document.getElementById("wait-" + id).value;
   const due = document.getElementById("due-" + id).value;
   const task = state.tasks.find(t => t.id === id);
   const attachment_labels = {};
@@ -734,7 +712,7 @@ async function saveDetails(id) {
     const v = input.value.trim();
     if (v && v !== name.replace(/\.(msg|eml)$/i, "")) attachment_labels[name] = v;
   });
-  await api("/api/update", { id, note, waiting_on, due, attachment_labels });
+  await api("/api/update", { id, note, due, attachment_labels });
   expanded.delete(id);
   await refresh();
 }
