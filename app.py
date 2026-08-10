@@ -308,10 +308,11 @@ PAGE = r"""<!DOCTYPE html>
     font-size: 15px; outline: none; padding: 4px 2px;
   }
   .addcontrols { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  .addcontrols select, .addcontrols input[type=date], .addcontrols button {
+  .addcontrols select, .addcontrols input, .addcontrols button {
     border: 1px solid var(--line); background: var(--bg); color: var(--text);
     border-radius: 8px; padding: 6px 10px; font-size: 13px; cursor: pointer;
   }
+  .addcontrols input[type=text] { cursor: text; flex: 1 1 150px; }
   .addcontrols button.add { background: var(--accent); color: #fff; border-color: var(--accent); }
   .addcontrols button.closeadd { border: none; background: transparent; color: var(--muted); }
 
@@ -434,6 +435,7 @@ PAGE = r"""<!DOCTYPE html>
         <option value="waiting">Waiting</option>
       </select>
       <input type="date" id="add-due" title="Deadline — only for real commitments (optional)">
+      <input type="text" id="add-wait" class="hidden" placeholder="Waiting on whom?">
       <button class="add" type="submit">Add</button>
       <button type="button" class="closeadd" onclick="toggleAdd()" title="Close (Esc)">Close</button>
     </div>
@@ -524,7 +526,8 @@ function taskRow(t, opts = {}) {
       <div><label>Note</label><textarea id="note-${t.id}">${esc(t.note)}</textarea></div>
       <div><label>Deadline — only for real commitments (leave blank otherwise)</label>
         <input type="date" id="due-${t.id}" value="${esc(t.due || "")}"></div>
-      <div><label>Waiting on (person / ticket)</label><input id="wait-${t.id}" value="${esc(t.waiting_on)}"></div>
+      <div><label>Waiting on (person / ticket) — filling this moves the task to Waiting For; clearing it sends it back to This Week</label>
+        <input id="wait-${t.id}" value="${esc(t.waiting_on)}"></div>
       ${(t.attachments || []).length ? `
       <div><label>Attachment names (clear to reset to the original subject)</label>
         <div class="attlist">
@@ -655,9 +658,11 @@ async function addTask() {
   }
   const bucket = document.getElementById("add-bucket").value;
   const due = document.getElementById("add-due").value;
-  await api("/api/add", { text, project, bucket, due });
+  const waiting_on = bucket === "waiting" ? document.getElementById("add-wait").value.trim() : "";
+  await api("/api/add", { text, project, bucket, due, waiting_on });
   input.value = "";
   document.getElementById("add-due").value = "";
+  document.getElementById("add-wait").value = "";
   await refresh();
   input.focus();
 }
@@ -670,6 +675,10 @@ async function toggleDone(id) {
 
 async function moveTask(id, bucket) {
   await api("/api/update", { id, bucket });
+  if (bucket === "waiting") {
+    const t = state.tasks.find(t => t.id === id);
+    if (t && !t.waiting_on) expanded.add(id);  // open the editor to ask "waiting on whom?"
+  }
   await refresh();
 }
 
@@ -716,7 +725,12 @@ async function saveDetails(id) {
     const v = input.value.trim();
     if (v && v !== name.replace(/\.(msg|eml)$/i, "")) attachment_labels[name] = v;
   });
-  await api("/api/update", { id, note, waiting_on, due, attachment_labels });
+  const patch = { id, note, waiting_on, due, attachment_labels };
+  // "Waiting on" and the Waiting bucket are one concept: filling the field
+  // moves the task there; clearing it sends the task back to This Week.
+  if (waiting_on.trim() && task.bucket !== "waiting") patch.bucket = "waiting";
+  else if (!waiting_on.trim() && task.bucket === "waiting") patch.bucket = "week";
+  await api("/api/update", patch);
   expanded.delete(id);
   await refresh();
 }
@@ -769,6 +783,9 @@ viewEl.addEventListener("drop", async e => {
 // ---------- init ----------
 document.getElementById("add-form").addEventListener("keydown", e => {
   if (e.key === "Escape") toggleAdd();
+});
+document.getElementById("add-bucket").addEventListener("change", e => {
+  document.getElementById("add-wait").classList.toggle("hidden", e.target.value !== "waiting");
 });
 document.getElementById("today-date").textContent =
   new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
