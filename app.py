@@ -496,7 +496,15 @@ function renderTabs() {
     return `<button class="${tab===k?"active":""}" onclick="setTab('${k}')">${label}${c}</button>`;
   }).join("");
 }
-function setTab(k) { tab = k; render(); }
+function setTab(k) { tab = k; render(); syncAddBucket(); }
+
+// The add form's bucket follows the tab you're on (Projects/Done default to This Week).
+function syncAddBucket() {
+  const map = { today: "today", week: "week", waiting: "waiting", later: "later" };
+  const bucket = map[tab] || "week";
+  document.getElementById("add-bucket").value = bucket;
+  document.getElementById("add-wait").classList.toggle("hidden", bucket !== "waiting");
+}
 
 function renderAddBar() {
   const sel = document.getElementById("add-project");
@@ -664,7 +672,7 @@ async function addTask() {
   document.getElementById("add-due").value = "";
   document.getElementById("add-wait").value = "";
   await refresh();
-  input.focus();
+  toggleAdd();  // collapse after adding
 }
 
 async function toggleDone(id) {
@@ -740,7 +748,10 @@ function toggleAdd() {
   const btn = document.getElementById("add-toggle");
   const nowOpen = form.classList.toggle("hidden") === false;
   btn.classList.toggle("hidden", nowOpen);
-  if (nowOpen) document.getElementById("add-text").focus();
+  if (nowOpen) {
+    syncAddBucket();
+    document.getElementById("add-text").focus();
+  }
 }
 
 // ---------- attachments: click to open, × to detach, drag-and-drop to add ----------
