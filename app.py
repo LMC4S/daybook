@@ -14,7 +14,7 @@ import subprocess
 import sys
 import threading
 import webbrowser
-from datetime import datetime, timedelta
+from datetime import datetime
 from urllib.parse import parse_qs, unquote, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -26,49 +26,6 @@ LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------- storage ----
-
-def seed_data():
-    """First-run example data so the app isn't empty. Delete tasks freely."""
-    def day(offset):
-        return (datetime.now() + timedelta(days=offset)).strftime("%Y-%m-%d")
-
-    def stamp(offset):
-        return (datetime.now() + timedelta(days=offset)).strftime("%Y-%m-%dT%H:%M:%S")
-
-    def t(id, text, project, bucket, note="", waiting_on="", due="", created=None, completed_at=None):
-        return {"id": id, "text": text, "project": project, "bucket": bucket,
-                "note": note, "waiting_on": waiting_on, "due": due,
-                "created": created or day(-7), "completed_at": completed_at}
-    return {
-        "projects": [
-            "Website Refresh",
-            "Quarterly Report",
-            "Client Onboarding",
-            "Internal Tools",
-        ],
-        "tasks": [
-            t(1, "Draft the new homepage copy", "Website Refresh", "today",
-              note="Keep the intro under three sentences."),
-            t(2, "Review analytics summary", "Quarterly Report", "today"),
-            t(3, "Outline the report structure", "Quarterly Report", "week", due=day(2)),
-            t(4, "Send the updated contract", "Client Onboarding", "week", due=day(-2)),
-            t(5, "Fix the CSV export bug", "Internal Tools", "week",
-              note="Commas inside quoted fields break the parser."),
-            t(6, "Collect feedback on the intake form", "Client Onboarding", "week"),
-            t(7, "Logo files", "Website Refresh", "waiting",
-              waiting_on="Design agency"),
-            t(8, "Access to the billing dashboard", "Internal Tools", "waiting",
-              waiting_on="IT"),
-            t(9, "Evaluate switching form vendors", "Internal Tools", "later"),
-            t(10, "Plan next quarter's roadmap", "Quarterly Report", "later"),
-            t(11, "Publish last week's meeting notes", "Client Onboarding", "week",
-              completed_at=stamp(-1)),
-            t(12, "Update dependency versions", "Internal Tools", "week",
-              completed_at=stamp(-3)),
-        ],
-        "next_id": 13,
-    }
-
 
 # Fields every task must have, with the default used when an older tasks.json
 # predates the field. COMPATIBILITY RULE: new features may only ADD entries
@@ -99,7 +56,7 @@ def upgrade(data):
 def load_data():
     with LOCK:
         if not os.path.exists(DATA_FILE):
-            data = seed_data()
+            data = upgrade({})  # first run starts empty
             _write(data)
             return data
         with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -276,6 +233,18 @@ class Handler(BaseHTTPRequestHandler):
                 save_data(data)
             self._send(200, {"ok": True})
 
+        elif self.path == "/api/project-delete":
+            name = (body.get("name") or "").strip()
+            if name not in data["projects"]:
+                self._send(404, {"error": "no such project"})
+                return
+            if any(t["project"] == name for t in data["tasks"]):
+                self._send(400, {"error": "project still has tasks"})
+                return
+            data["projects"].remove(name)
+            save_data(data)
+            self._send(200, {"ok": True})
+
         else:
             self._send(404, {"error": "not found"})
 
@@ -427,6 +396,12 @@ PAGE = r"""<!DOCTYPE html>
   .proj-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
     padding: 12px 14px; margin-bottom: 12px; box-shadow: var(--shadow); }
   .proj-card h3 { margin: 0 0 6px; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .projrm {
+    margin-left: auto; border: 1px solid var(--line); background: transparent; color: var(--muted);
+    font-size: 11.5px; padding: 2px 8px; border-radius: 6px; cursor: pointer;
+  }
+  .projrm:hover { color: var(--danger); border-color: var(--danger); }
+  .projrm.arm { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
   .proj-card ul { margin: 6px 0 0; padding-left: 20px; }
   .proj-card li { margin: 3px 0; }
   .proj-card .b { font-size: 11px; color: var(--muted); margin-left: 6px; text-transform: uppercase; letter-spacing: .04em; }
@@ -443,7 +418,7 @@ PAGE = r"""<!DOCTYPE html>
 
   <nav id="tabs"></nav>
 
-  <button class="addtoggle" id="add-toggle" onclick="toggleAdd()">＋ Add task</button>
+  <button class="addtoggle" id="add-toggle" onclick="toggleAdd()">+ Add task</button>
   <form class="addbar hidden" id="add-form" onsubmit="addTask(); return false;">
     <input type="text" id="add-text" placeholder="What needs doing? (Enter to save)">
     <div class="addcontrols">
@@ -521,11 +496,11 @@ function renderAddBar() {
   const sel = document.getElementById("add-project");
   const cur = sel.value;
   sel.innerHTML = state.projects.map(p => `<option ${p===cur?"selected":""}>${esc(p)}</option>`).join("")
-    + `<option value="__new__">＋ New project…</option>`;
+    + `<option value="__new__">+ New project…</option>`;
 }
 
 function taskRow(t, opts = {}) {
-  const wait = t.bucket === "waiting" && t.waiting_on ? `<span class="wait">⏳ ${esc(t.waiting_on)}</span>` : "";
+  const wait = t.bucket === "waiting" && t.waiting_on ? `<span class="wait">waiting on ${esc(t.waiting_on)}</span>` : "";
   const tagBits = [
     opts.hideProj ? "" : `<span class="proj">${esc(t.project)}</span>`,
     dueTag(t), wait,
@@ -533,7 +508,7 @@ function taskRow(t, opts = {}) {
   const atts = (t.attachments || []).map(name => {
     const isEmail = /\.(msg|eml)$/i.test(name);
     return `<span class="att" data-name="${esc(name)}" title="Open in ${isEmail ? "Outlook" : "default app"}">` +
-      `${isEmail ? "✉" : "📎"} ${esc(name.replace(/\.(msg|eml)$/i, ""))}` +
+      `${esc(name.replace(/\.(msg|eml)$/i, ""))}` +
       `<button class="attx" data-name="${esc(name)}" title="Remove attachment">×</button></span>`;
   }).join("");
   const mover = `<select class="mv" title="Move to…" onchange="moveTask(${t.id}, this.value)">`
@@ -560,7 +535,7 @@ function taskRow(t, opts = {}) {
       </div>
       <div class="controls">
         ${opts.pull ? `<button class="pull" onclick="moveTask(${t.id},'today')">→ Today</button>` : mover}
-        <button title="Edit note / deadline" onclick="toggleEdit(${t.id})">✎</button>
+        <button title="Edit note / deadline" onclick="toggleEdit(${t.id})">Edit</button>
         <button class="del ${pendingDelete===t.id ? "arm" : ""}" title="Delete"
           onclick="delTask(${t.id})">${pendingDelete===t.id ? "Delete?" : "×"}</button>
       </div>
@@ -570,6 +545,8 @@ function taskRow(t, opts = {}) {
 }
 
 function viewToday() {
+  if (!state.tasks.length)
+    return `<div class="empty">Nothing here yet. Click "+ Add task" to capture your first task.</div>`;
   const isDue = t => !!(t.due && t.due <= todayISO());
   const dueFirst = (a, b) => (isDue(b) ? 1 : 0) - (isDue(a) ? 1 : 0)
     || String(a.due || "~").localeCompare(String(b.due || "~"));
@@ -588,7 +565,7 @@ function viewToday() {
     html += deck.map(t => taskRow(t, {pull: true})).join("");
   }
   if (doneToday.length) {
-    html += `<div class="section-title">Done today ✔</div>`;
+    html += `<div class="section-title">Done today</div>`;
     html += doneToday.map(t => taskRow(t)).join("");
   }
   return html;
@@ -606,19 +583,25 @@ function viewGrouped(bucket, emptyMsg) {
 
 function viewWaiting() {
   const tasks = inBucket("waiting");
-  if (!tasks.length) return `<div class="empty">Nothing blocked on anyone. 🎉</div>`;
+  if (!tasks.length) return `<div class="empty">Nothing blocked on anyone.</div>`;
   return `<div class="empty" style="padding-top:0">Things you’re blocked on — check these before your weekly meetings.</div>`
     + tasks.map(t => taskRow(t)).join("");
 }
 
 function viewProjects() {
+  if (!state.projects.length)
+    return `<div class="empty">No projects yet — you create one the first time you add a task.</div>`;
   return state.projects.map(p => {
-    const ts = state.tasks.filter(t => t.project === p && pending(t));
-    const items = ts.length
-      ? `<ul>` + ts.map(t => `<li>${esc(t.text)}<span class="b">${esc(t.bucket)}</span>${dueTag(t)}</li>`).join("") + `</ul>`
+    const open = state.tasks.filter(t => t.project === p && pending(t));
+    const total = state.tasks.filter(t => t.project === p).length;
+    const items = open.length
+      ? `<ul>` + open.map(t => `<li>${esc(t.text)}<span class="b">${esc(t.bucket)}</span>${dueTag(t)}</li>`).join("") + `</ul>`
       : `<div class="allclear">Nothing pending — all clear.</div>`;
+    const rm = total === 0
+      ? `<button class="projrm ${pendingProjRm===p ? "arm" : ""}" data-proj="${esc(p)}">${pendingProjRm===p ? "Remove?" : "Remove"}</button>`
+      : "";
     return `<div class="proj-card">
-      <h3>${esc(p)} <span class="b">${ts.length} open</span></h3>${items}</div>`;
+      <h3>${esc(p)} <span class="b">${open.length} open</span>${rm}</h3>${items}</div>`;
   }).join("");
 }
 
@@ -679,6 +662,19 @@ async function moveTask(id, bucket) {
 }
 
 let pendingDelete = null;
+let pendingProjRm = null;
+async function removeProject(name) {
+  if (pendingProjRm === name) {
+    pendingProjRm = null;
+    await api("/api/project-delete", { name });
+    await refresh();
+    return;
+  }
+  pendingProjRm = name;
+  render();
+  setTimeout(() => { if (pendingProjRm === name) { pendingProjRm = null; render(); } }, 3500);
+}
+
 async function delTask(id) {
   if (pendingDelete === id) {
     pendingDelete = null;
@@ -716,6 +712,8 @@ function toggleAdd() {
 // ---------- attachments: click to open, × to detach, drag-and-drop to add ----------
 const viewEl = document.getElementById("view");
 viewEl.addEventListener("click", async e => {
+  const prm = e.target.closest(".projrm");
+  if (prm) { removeProject(prm.dataset.proj); return; }
   const card = e.target.closest(".task");
   if (!card) return;
   const id = Number(card.dataset.tid);
@@ -779,7 +777,7 @@ def backup_data():
 
 def main():
     backup_data()
-    load_data()  # creates tasks.json with examples on first run
+    load_data()  # creates an empty tasks.json on first run
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     url = "http://localhost:%d" % PORT
     print("Daybook running at %s  (Ctrl+C to stop)" % url)
