@@ -322,11 +322,11 @@ PAGE = r"""<!DOCTYPE html>
   .section-title { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
     color: var(--muted); margin: 22px 0 8px; }
   .group-title { font-size: 14px; font-weight: 600; color: var(--text); margin: 20px 0 8px; }
-  .fold {
-    display: block; width: 100%; text-align: left; background: transparent; border: none;
-    color: var(--muted); font-size: 13px; padding: 10px 4px 2px; cursor: pointer;
-  }
-  .fold:hover { color: var(--text); }
+  .deckrow { display: flex; align-items: baseline; gap: 10px; padding: 3px 8px; }
+  .deckrow .dtext { font-size: 13.5px; }
+  .deckrow .pull { opacity: 0; margin-left: auto; flex-shrink: 0; transition: opacity .12s; }
+  .deckrow:hover .pull { opacity: 1; }
+  .doneline { color: var(--muted); font-size: 13px; padding: 12px 8px 2px; }
   .empty { color: var(--muted); font-style: italic; padding: 14px 4px; }
 
   .task {
@@ -500,7 +500,7 @@ function renderTabs() {
     return `<button class="${tab===k?"active":""}" onclick="setTab('${k}')">${label}${c}</button>`;
   }).join("");
 }
-function setTab(k) { tab = k; foldDeck = foldDone = false; render(); syncAddBucket(); }
+function setTab(k) { tab = k; render(); syncAddBucket(); }
 
 // The add form's bucket follows the tab you're on (Projects/Done default to This Week).
 function syncAddBucket() {
@@ -555,7 +555,7 @@ function taskRow(t, opts = {}) {
         ${t.note && !expanded.has(t.id) ? `<div class="meta">${esc(t.note)}</div>` : ""}
       </div>
       <div class="controls">
-        ${opts.pull ? `<button class="pull" onclick="moveTask(${t.id},'today')">→ Today</button>` : mover}
+        ${mover}
         <button title="Edit note / deadline" onclick="toggleEdit(${t.id})">Edit</button>
         <button class="del ${pendingDelete===t.id ? "arm" : ""}" title="Delete"
           onclick="delTask(${t.id})">${pendingDelete===t.id ? "Delete?" : "×"}</button>
@@ -565,14 +565,13 @@ function taskRow(t, opts = {}) {
   </div>`;
 }
 
-let foldDeck = false, foldDone = false;
 function viewToday() {
   if (!state.tasks.length)
     return `<div class="empty">Nothing here yet.</div>`;
   const isDue = t => !!(t.due && t.due <= todayISO());
   const dueFirst = (a, b) => (isDue(b) ? 1 : 0) - (isDue(a) ? 1 : 0)
     || String(a.due || "~").localeCompare(String(b.due || "~"));
-  // The page is only what needs you today: your picks, plus anything due or overdue.
+  // Cards are only what needs you today: your picks, plus anything due or overdue.
   const focus = state.tasks.filter(t => pending(t) && (t.bucket === "today" || isDue(t)))
     .sort(dueFirst);
   const focusIds = new Set(focus.map(t => t.id));
@@ -582,13 +581,14 @@ function viewToday() {
     ? focus.map(t => taskRow(t)).join("")
     : `<div class="empty">Nothing picked for today.</div>`;
   if (deck.length) {
-    html += `<button class="fold" onclick="foldDeck=!foldDeck;render()">${deck.length} on deck this week</button>`;
-    if (foldDeck) html += deck.map(t => taskRow(t, {pull: true})).join("");
+    html += `<div class="section-title">On deck this week</div>`;
+    html += deck.map(t => `
+      <div class="deckrow">
+        <span class="dtext">${esc(t.text)}</span><span class="proj">${esc(t.project)}</span>${dueTag(t)}
+        <button class="pull" onclick="moveTask(${t.id},'today')">to Today</button>
+      </div>`).join("");
   }
-  if (doneToday.length) {
-    html += `<button class="fold" onclick="foldDone=!foldDone;render()">${doneToday.length} done today</button>`;
-    if (foldDone) html += doneToday.map(t => taskRow(t)).join("");
-  }
+  if (doneToday.length) html += `<div class="doneline">${doneToday.length} done today</div>`;
   return html;
 }
 
