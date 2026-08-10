@@ -359,6 +359,11 @@ PAGE = r"""<!DOCTYPE html>
   .att:hover .attx { opacity: 1; }
   .att .attx:hover { color: var(--danger); }
   .task.drop { border-color: var(--accent); background: var(--accent-soft); }
+  .task.waitcard { border-left: 3px solid var(--accent); }
+  .task .who {
+    font-size: 11.5px; font-weight: 600; color: var(--accent);
+    text-transform: uppercase; letter-spacing: .04em; margin-bottom: 1px;
+  }
   .task .controls {
     display: flex; gap: 4px; align-items: center; flex-shrink: 0;
     opacity: 0; transition: opacity .12s;
@@ -437,7 +442,7 @@ PAGE = r"""<!DOCTYPE html>
         <option value="week" selected>This Week</option>
         <option value="later">Later</option>
       </select>
-      <input type="date" id="add-due" title="Deadline — only for real commitments (optional)">
+      <input type="date" id="add-due" title="Deadline (optional)">
       <input type="text" id="add-wait" class="hidden" placeholder="Waiting on whom?">
       <button class="add" type="submit">Add</button>
       <button type="button" class="closeadd" onclick="toggleAdd()" title="Close (Esc)">Close</button>
@@ -466,7 +471,7 @@ function dueTag(t) {
   const label = new Date(t.due + "T00:00:00")
     .toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
   if (t.completed_at) return `<span class="due">due ${label}</span>`;
-  if (t.due < todayISO()) return `<span class="due overdue">overdue — was due ${label}</span>`;
+  if (t.due < todayISO()) return `<span class="due overdue">overdue since ${label}</span>`;
   if (t.due === todayISO()) return `<span class="due today">due today</span>`;
   return `<span class="due">due ${label}</span>`;
 }
@@ -483,7 +488,7 @@ function render() {
   renderTabs(); renderAddBar();
   const v = document.getElementById("view");
   if (tab === "today")        v.innerHTML = viewToday();
-  else if (tab === "week")    v.innerHTML = viewGrouped("week", "Nothing queued for this week. Do a Monday sweep of your projects!");
+  else if (tab === "week")    v.innerHTML = viewGrouped("week", "Nothing queued for this week.");
   else if (tab === "waiting") v.innerHTML = viewWaiting();
   else if (tab === "later")   v.innerHTML = viewGrouped("later", "Nothing parked for later.");
   else if (tab === "projects") v.innerHTML = viewProjects();
@@ -518,7 +523,9 @@ function renderAddBar() {
 }
 
 function taskRow(t, opts = {}) {
-  const wait = t.waiting_on && !t.completed_at ? `<span class="wait">waiting on ${esc(t.waiting_on)}</span>` : "";
+  const wait = t.waiting_on && !t.completed_at && !opts.waitingView
+    ? `<span class="wait">waiting on ${esc(t.waiting_on)}</span>` : "";
+  const who = opts.waitingView ? `<div class="who">Waiting on ${esc(t.waiting_on)}</div>` : "";
   const tagBits = [
     opts.hideProj ? "" : `<span class="proj">${esc(t.project)}</span>`,
     dueTag(t), wait,
@@ -536,25 +543,25 @@ function taskRow(t, opts = {}) {
   const editor = expanded.has(t.id) ? `
     <div class="editor">
       <div><label>Note</label><textarea id="note-${t.id}">${esc(t.note)}</textarea></div>
-      <div><label>Deadline — only for real commitments (leave blank otherwise)</label>
+      <div><label>Deadline (optional)</label>
         <input type="date" id="due-${t.id}" value="${esc(t.due || "")}"></div>
-      <div><label>Waiting on (person / ticket) — the task also appears under Waiting For until you clear this</label>
+      <div><label>Waiting on (optional)</label>
         <input id="wait-${t.id}" value="${esc(t.waiting_on)}"></div>
       ${(t.attachments || []).length ? `
-      <div><label>Attachment names (clear to reset to the original subject)</label>
+      <div><label>Attachment names</label>
         <div class="attlist">
           ${t.attachments.map((name, i) =>
             `<input id="attlabel-${t.id}-${i}" value="${esc(attLabel(name))}">`).join("")}
         </div>
       </div>` : ""}
-      <div class="hint">To attach an email: drag it from Outlook to your desktop (this creates a .msg file), then drop that file anywhere on this task.</div>
       <button class="savebtn" onclick="saveDetails(${t.id})">Save</button>
     </div>` : "";
   return `
-  <div class="task ${t.completed_at ? "done" : ""}" data-tid="${t.id}">
+  <div class="task ${t.completed_at ? "done" : ""} ${opts.waitingView ? "waitcard" : ""}" data-tid="${t.id}">
     <div class="row">
       <input type="checkbox" ${t.completed_at ? "checked" : ""} onchange="toggleDone(${t.id})">
       <div class="text">
+        ${who}
         <div class="label">${esc(t.text)}</div>
         ${tagBits ? `<div class="tags">${tagBits}</div>` : ""}
         ${atts ? `<div class="atts">${atts}</div>` : ""}
@@ -573,7 +580,7 @@ function taskRow(t, opts = {}) {
 
 function viewToday() {
   if (!state.tasks.length)
-    return `<div class="empty">Nothing here yet. Click "+ Add task" to capture your first task.</div>`;
+    return `<div class="empty">Nothing here yet.</div>`;
   const isDue = t => !!(t.due && t.due <= todayISO());
   const dueFirst = (a, b) => (isDue(b) ? 1 : 0) - (isDue(a) ? 1 : 0)
     || String(a.due || "~").localeCompare(String(b.due || "~"));
@@ -586,7 +593,7 @@ function viewToday() {
   let html = "";
   html += todays.length
     ? todays.map(t => taskRow(t)).join("")
-    : `<div class="empty">Nothing picked for today yet — pull a few items up from “On deck this week” below. Aim for 3–5.</div>`;
+    : `<div class="empty">Nothing picked for today.</div>`;
   if (deck.length) {
     html += `<div class="section-title">On deck this week</div>`;
     html += deck.map(t => taskRow(t, {pull: true})).join("");
@@ -609,21 +616,21 @@ function viewGrouped(bucket, emptyMsg) {
 }
 
 function viewWaiting() {
-  const tasks = state.tasks.filter(t => pending(t) && t.waiting_on);
+  const tasks = state.tasks.filter(t => pending(t) && t.waiting_on)
+    .sort((a, b) => a.waiting_on.localeCompare(b.waiting_on));
   if (!tasks.length) return `<div class="empty">Nothing waiting on anyone.</div>`;
-  return `<div class="empty" style="padding-top:0">Everything someone owes you, from any bucket — check before your weekly meetings.</div>`
-    + tasks.map(t => taskRow(t)).join("");
+  return tasks.map(t => taskRow(t, {waitingView: true})).join("");
 }
 
 function viewProjects() {
   if (!state.projects.length)
-    return `<div class="empty">No projects yet — you create one the first time you add a task.</div>`;
+    return `<div class="empty">No projects yet.</div>`;
   return state.projects.map(p => {
     const open = state.tasks.filter(t => t.project === p && pending(t));
     const total = state.tasks.filter(t => t.project === p).length;
     const items = open.length
       ? `<ul>` + open.map(t => `<li>${esc(t.text)}<span class="b">${esc(t.bucket)}</span>${dueTag(t)}</li>`).join("") + `</ul>`
-      : `<div class="allclear">Nothing pending — all clear.</div>`;
+      : `<div class="allclear">Nothing pending.</div>`;
     const rm = total === 0
       ? `<button class="projrm ${pendingProjRm===p ? "arm" : ""}" data-proj="${esc(p)}">${pendingProjRm===p ? "Remove?" : "Remove"}</button>`
       : "";
@@ -646,7 +653,7 @@ function viewDone() {
       <select onchange="doneProject=this.value;render()">${projOptions}</select>
       ${rangeBtn(7,"Last 7 days")}${rangeBtn(14,"Last 14 days")}${rangeBtn(0,"All time")}
     </div>
-    <div class="empty" style="padding-top:0">Meeting prep: filter by project to see what you delivered since last time.</div>`;
+`;
   if (!done.length) return html + `<div class="empty">Nothing completed in this range.</div>`;
   let lastDate = "";
   done.forEach(t => {
