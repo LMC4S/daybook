@@ -44,6 +44,7 @@ def upgrade(data):
     lets a new app.py be dropped onto a machine with an old data file.
     """
     data.setdefault("projects", [])
+    data.setdefault("archived", [])
     data.setdefault("tasks", [])
     for task in data["tasks"]:
         for field, default in TASK_DEFAULTS.items():
@@ -236,8 +237,34 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/project":
             name = (body.get("name") or "").strip()
             if name and name not in data["projects"]:
+                if name in data["archived"]:
+                    data["archived"].remove(name)
                 data["projects"].append(name)
                 save_data(data)
+            self._send(200, {"ok": True})
+
+        elif self.path == "/api/project-archive":
+            name = (body.get("name") or "").strip()
+            if name not in data["projects"]:
+                self._send(404, {"error": "no such project"})
+                return
+            if any(t["project"] == name and not t["completed_at"] for t in data["tasks"]):
+                self._send(400, {"error": "project has open tasks"})
+                return
+            data["projects"].remove(name)
+            data["archived"].append(name)
+            save_data(data)
+            self._send(200, {"ok": True})
+
+        elif self.path == "/api/project-unarchive":
+            name = (body.get("name") or "").strip()
+            if name not in data["archived"]:
+                self._send(404, {"error": "not archived"})
+                return
+            data["archived"].remove(name)
+            if name not in data["projects"]:
+                data["projects"].append(name)
+            save_data(data)
             self._send(200, {"ok": True})
 
         elif self.path == "/api/project-delete":
@@ -416,6 +443,7 @@ PAGE = r"""<!DOCTYPE html>
   .projrm.arm { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
   .proj-card ul { margin: 6px 0 0; padding-left: 20px; }
   .proj-card li { margin: 3px 0; }
+  .proj-card li .due { margin-left: 8px; }
   .proj-card .b { font-size: 11px; color: var(--muted); margin-left: 6px; text-transform: uppercase; letter-spacing: .04em; }
   .allclear { color: var(--muted); font-style: italic; }
   .done-date { font-size: 12px; color: var(--muted); margin: 14px 0 6px; font-weight: 600; }
@@ -603,20 +631,30 @@ function viewGrouped(bucket, emptyMsg) {
 }
 
 function viewProjects() {
-  if (!state.projects.length)
+  const archived = state.archived || [];
+  if (!state.projects.length && !archived.length)
     return `<div class="empty">No projects yet.</div>`;
-  return state.projects.map(p => {
+  let html = state.projects.map(p => {
     const open = state.tasks.filter(t => t.project === p && pending(t));
     const total = state.tasks.filter(t => t.project === p).length;
     const items = open.length
       ? `<ul>` + open.map(t => `<li>${esc(t.text)}<span class="b">${esc(t.bucket)}</span>${dueTag(t)}</li>`).join("") + `</ul>`
       : `<div class="allclear">Nothing pending.</div>`;
-    const rm = total === 0
-      ? `<button class="projrm ${pendingProjRm===p ? "arm" : ""}" data-proj="${esc(p)}">${pendingProjRm===p ? "Remove?" : "Remove"}</button>`
-      : "";
+    let action = "";
+    if (total === 0)
+      action = `<button class="projrm ${pendingProjRm===p ? "arm" : ""}" data-proj="${esc(p)}">${pendingProjRm===p ? "Remove?" : "Remove"}</button>`;
+    else if (!open.length)
+      action = `<button class="projrm projarch ${pendingProjArch===p ? "arm" : ""}" data-proj="${esc(p)}">${pendingProjArch===p ? "Archive?" : "Archive"}</button>`;
     return `<div class="proj-card">
-      <h3>${esc(p)} <span class="b">${open.length} open</span>${rm}</h3>${items}</div>`;
+      <h3>${esc(p)} <span class="b">${open.length} open</span>${action}</h3>${items}</div>`;
   }).join("");
+  if (archived.length) {
+    html += `<div class="section-title">Archived</div>`;
+    html += archived.map(p => `
+      <div class="deckrow"><span class="dtext">${esc(p)}</span>
+        <button class="pull projrestore" data-proj="${esc(p)}">Restore</button></div>`).join("");
+  }
+  return html;
 }
 
 function viewDone() {
@@ -626,7 +664,8 @@ function viewDone() {
     .filter(t => !cutoff || new Date(t.completed_at) >= cutoff)
     .sort((a, b) => String(b.completed_at).localeCompare(String(a.completed_at)));
   const projOptions = `<option value="all">All projects</option>` +
-    state.projects.map(p => `<option ${p===doneProject?"selected":""}>${esc(p)}</option>`).join("");
+    state.projects.concat(state.archived || [])
+      .map(p => `<option ${p===doneProject?"selected":""}>${esc(p)}</option>`).join("");
   const rangeBtn = (d, label) =>
     `<button class="${doneDays===d?"active":""}" onclick="doneDays=${d};render()">${label}</button>`;
   let html = `<div class="filterbar">
@@ -689,6 +728,19 @@ async function removeProject(name) {
   setTimeout(() => { if (pendingProjRm === name) { pendingProjRm = null; render(); } }, 3500);
 }
 
+let pendingProjArch = null;
+async function archiveProject(name) {
+  if (pendingProjArch === name) {
+    pendingProjArch = null;
+    await api("/api/project-archive", { name });
+    await refresh();
+    return;
+  }
+  pendingProjArch = name;
+  render();
+  setTimeout(() => { if (pendingProjArch === name) { pendingProjArch = null; render(); } }, 3500);
+}
+
 async function delTask(id) {
   if (pendingDelete === id) {
     pendingDelete = null;
@@ -736,6 +788,10 @@ function toggleAdd() {
 // ---------- attachments: click to open, × to detach, drag-and-drop to add ----------
 const viewEl = document.getElementById("view");
 viewEl.addEventListener("click", async e => {
+  const pr = e.target.closest(".projrestore");
+  if (pr) { await api("/api/project-unarchive", { name: pr.dataset.proj }); await refresh(); return; }
+  const pa = e.target.closest(".projarch");
+  if (pa) { archiveProject(pa.dataset.proj); return; }
   const prm = e.target.closest(".projrm");
   if (prm) { removeProject(prm.dataset.proj); return; }
   const card = e.target.closest(".task");
