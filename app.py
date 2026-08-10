@@ -33,7 +33,7 @@ LOCK = threading.Lock()
 TASK_DEFAULTS = {
     "text": "", "project": "(no project)", "bucket": "week",
     "note": "", "waiting_on": "", "due": "",
-    "created": "", "completed_at": None, "attachments": [],
+    "created": "", "completed_at": None, "attachments": [], "attachment_labels": {},
 }
 
 
@@ -48,7 +48,8 @@ def upgrade(data):
     for task in data["tasks"]:
         for field, default in TASK_DEFAULTS.items():
             if field not in task:
-                task[field] = list(default) if isinstance(default, list) else default
+                task[field] = (list(default) if isinstance(default, list)
+                               else dict(default) if isinstance(default, dict) else default)
     data.setdefault("next_id", max([t["id"] for t in data["tasks"]], default=0) + 1)
     return data
 
@@ -182,7 +183,8 @@ class Handler(BaseHTTPRequestHandler):
             if task is None:
                 self._send(404, {"error": "no such task"})
                 return
-            for field in ("text", "project", "bucket", "note", "waiting_on", "due", "completed_at"):
+            for field in ("text", "project", "bucket", "note", "waiting_on", "due",
+                          "completed_at", "attachment_labels"):
                 if field in body:
                     task[field] = body[field]
             save_data(data)
@@ -219,6 +221,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "no such attachment"})
                 return
             task["attachments"].remove(name)
+            task["attachment_labels"].pop(name, None)
             try:
                 os.remove(path)
             except OSError:
@@ -380,6 +383,7 @@ PAGE = r"""<!DOCTYPE html>
   .editor textarea { resize: vertical; min-height: 54px; }
   .editor label { font-size: 12px; color: var(--muted); }
   .editor .hint { font-size: 12px; color: var(--muted); }
+  .editor .attlist { display: grid; gap: 6px; }
   .editor .savebtn { justify-self: start; border: none; background: var(--accent); color: #fff;
     border-radius: 8px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
 
@@ -505,10 +509,11 @@ function taskRow(t, opts = {}) {
     opts.hideProj ? "" : `<span class="proj">${esc(t.project)}</span>`,
     dueTag(t), wait,
   ].filter(Boolean).join("");
+  const attLabel = name => (t.attachment_labels || {})[name] || name.replace(/\.(msg|eml)$/i, "");
   const atts = (t.attachments || []).map(name => {
     const isEmail = /\.(msg|eml)$/i.test(name);
-    return `<span class="att" data-name="${esc(name)}" title="Open in ${isEmail ? "Outlook" : "default app"}">` +
-      `${esc(name.replace(/\.(msg|eml)$/i, ""))}` +
+    return `<span class="att" data-name="${esc(name)}" title="${esc(name)} — opens in ${isEmail ? "Outlook" : "default app"}">` +
+      `${esc(attLabel(name))}` +
       `<button class="attx" data-name="${esc(name)}" title="Remove attachment">×</button></span>`;
   }).join("");
   const mover = `<select class="mv" title="Move to…" onchange="moveTask(${t.id}, this.value)">`
@@ -520,6 +525,13 @@ function taskRow(t, opts = {}) {
       <div><label>Deadline — only for real commitments (leave blank otherwise)</label>
         <input type="date" id="due-${t.id}" value="${esc(t.due || "")}"></div>
       <div><label>Waiting on (person / ticket)</label><input id="wait-${t.id}" value="${esc(t.waiting_on)}"></div>
+      ${(t.attachments || []).length ? `
+      <div><label>Attachment names (clear to reset to the original subject)</label>
+        <div class="attlist">
+          ${t.attachments.map((name, i) =>
+            `<input id="attlabel-${t.id}-${i}" value="${esc(attLabel(name))}">`).join("")}
+        </div>
+      </div>` : ""}
       <div class="hint">To attach an email: drag it from Outlook to your desktop (this creates a .msg file), then drop that file anywhere on this task.</div>
       <button class="savebtn" onclick="saveDetails(${t.id})">Save</button>
     </div>` : "";
@@ -696,7 +708,15 @@ async function saveDetails(id) {
   const note = document.getElementById("note-" + id).value;
   const waiting_on = document.getElementById("wait-" + id).value;
   const due = document.getElementById("due-" + id).value;
-  await api("/api/update", { id, note, waiting_on, due });
+  const task = state.tasks.find(t => t.id === id);
+  const attachment_labels = {};
+  (task.attachments || []).forEach((name, i) => {
+    const input = document.getElementById(`attlabel-${id}-${i}`);
+    if (!input) return;
+    const v = input.value.trim();
+    if (v && v !== name.replace(/\.(msg|eml)$/i, "")) attachment_labels[name] = v;
+  });
+  await api("/api/update", { id, note, waiting_on, due, attachment_labels });
   expanded.delete(id);
   await refresh();
 }
