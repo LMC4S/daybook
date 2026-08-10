@@ -322,6 +322,11 @@ PAGE = r"""<!DOCTYPE html>
   .section-title { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
     color: var(--muted); margin: 22px 0 8px; }
   .group-title { font-size: 14px; font-weight: 600; color: var(--text); margin: 20px 0 8px; }
+  .fold {
+    display: block; width: 100%; text-align: left; background: transparent; border: none;
+    color: var(--muted); font-size: 13px; padding: 10px 4px 2px; cursor: pointer;
+  }
+  .fold:hover { color: var(--text); }
   .empty { color: var(--muted); font-style: italic; padding: 14px 4px; }
 
   .task {
@@ -495,7 +500,7 @@ function renderTabs() {
     return `<button class="${tab===k?"active":""}" onclick="setTab('${k}')">${label}${c}</button>`;
   }).join("");
 }
-function setTab(k) { tab = k; render(); syncAddBucket(); }
+function setTab(k) { tab = k; foldDeck = foldDone = false; render(); syncAddBucket(); }
 
 // The add form's bucket follows the tab you're on (Projects/Done default to This Week).
 function syncAddBucket() {
@@ -560,29 +565,29 @@ function taskRow(t, opts = {}) {
   </div>`;
 }
 
+let foldDeck = false, foldDone = false;
 function viewToday() {
   if (!state.tasks.length)
     return `<div class="empty">Nothing here yet.</div>`;
   const isDue = t => !!(t.due && t.due <= todayISO());
   const dueFirst = (a, b) => (isDue(b) ? 1 : 0) - (isDue(a) ? 1 : 0)
     || String(a.due || "~").localeCompare(String(b.due || "~"));
-  const todays = inBucket("today").sort(dueFirst);
-  // anything due (or overdue) that wasn't picked for today surfaces onto the deck
-  const surfaced = state.tasks.filter(t => pending(t) && isDue(t) && t.bucket !== "today")
-    .sort((a, b) => a.due.localeCompare(b.due));
-  const deck = surfaced.concat(inBucket("week").filter(t => !isDue(t)));
+  // The page is only what needs you today: your picks, plus anything due or overdue.
+  const focus = state.tasks.filter(t => pending(t) && (t.bucket === "today" || isDue(t)))
+    .sort(dueFirst);
+  const focusIds = new Set(focus.map(t => t.id));
+  const deck = inBucket("week").filter(t => !focusIds.has(t.id));
   const doneToday = state.tasks.filter(t => t.completed_at && String(t.completed_at).slice(0,10) === todayISO());
-  let html = "";
-  html += todays.length
-    ? todays.map(t => taskRow(t)).join("")
+  let html = focus.length
+    ? focus.map(t => taskRow(t)).join("")
     : `<div class="empty">Nothing picked for today.</div>`;
   if (deck.length) {
-    html += `<div class="section-title">On deck this week</div>`;
-    html += deck.map(t => taskRow(t, {pull: true})).join("");
+    html += `<button class="fold" onclick="foldDeck=!foldDeck;render()">${deck.length} on deck this week</button>`;
+    if (foldDeck) html += deck.map(t => taskRow(t, {pull: true})).join("");
   }
   if (doneToday.length) {
-    html += `<div class="section-title">Done today</div>`;
-    html += doneToday.map(t => taskRow(t)).join("");
+    html += `<button class="fold" onclick="foldDone=!foldDone;render()">${doneToday.length} done today</button>`;
+    if (foldDone) html += doneToday.map(t => taskRow(t)).join("");
   }
   return html;
 }
