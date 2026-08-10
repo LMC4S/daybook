@@ -28,16 +28,13 @@ if not exist "%~dp0app.py.new" (
 )
 move /y "%~dp0app.py.new" "%~dp0app.py" >nul
 echo Updated. Restarting Daybook ...
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8765 " ^| findstr "LISTENING"') do taskkill /f /pid %%a >nul 2>nul
-timeout /t 1 /nobreak >nul
 goto run
 
 :run
 cd /d "%~dp0"
 
-rem Already running? Then just open the page.
-netstat -ano | findstr ":8765 " | findstr "LISTENING" >nul 2>nul
-if not errorlevel 1 goto open
+rem Always stop any running instance first, so what starts is the current code.
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8765 " ^| findstr "LISTENING"') do taskkill /f /pid %%a >nul 2>nul
 
 rem Prefer pythonw (no console window); fall back to a minimized console.
 where pythonw >nul 2>nul
@@ -47,7 +44,5 @@ if not errorlevel 1 (
   start "Daybook" /min python "%~dp0app.py" --no-browser
 )
 timeout /t 2 /nobreak >nul
-
-:open
 start "" http://localhost:8765
 endlocal
