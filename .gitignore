@@ -1,0 +1,4 @@
+tasks.json
+tasks.backup.json
+.claude/
+__pycache__/
